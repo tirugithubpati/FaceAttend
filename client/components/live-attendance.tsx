@@ -183,12 +183,12 @@ export default function LiveAttendance({
       try {
         isCapturingRef.current = true;
 
-        // Fast capture: skip processing, lower quality, no EXIF
+        // Fast capture: skip processing was stripping rotation, causing detection to fail on some devices
         const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.3,
+          quality: 0.5,
           base64: true,
-          skipProcessing: true,
-          exif: false,
+          skipProcessing: false,
+          exif: true,
         });
 
         if (photo?.uri) {

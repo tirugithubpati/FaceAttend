@@ -21,9 +21,8 @@ def get_mtcnn():
         print("Loading MTCNN detector...")
         g_mtcnn = MTCNN(
             image_size=160,
-            margin=40,  # increase margin for better alignment robustness
-            thresholds=[0.5, 0.6, 0.7],  # slightly relaxed thresholds to improve recall
-            min_face_size=20,  # detect smaller faces
+            margin=0,
+            min_face_size=40,
             keep_all=False,
             device='cpu')
         print("✅ MTCNN loaded.")
@@ -43,7 +42,7 @@ def resize_image_if_needed(img, max_len=720):
     if max(w, h) > max_len:
         scale = max_len / float(max(w, h))
         new_size = (int(w*scale), int(h*scale))
-        return img.resize(new_size, Image.LANCZOS)
+        return img.resize(new_size, Image.Resampling.LANCZOS)
     return img
 
 # Detect (with angle augmentation), return averaged embedding if multiple detected
@@ -51,30 +50,32 @@ def recognize_face(img):
     mtcnn = get_mtcnn()
     model = get_facenet()
     angles = [0, -15, 15]
-    embeddings = []
-    detected_any = False
+    
     for angle in angles:
-        # Rotate around center
         if angle != 0:
-            rotated = img.rotate(angle, resample=Image.BICUBIC, expand=True)
+            # Prevent expanding the canvas too much, which throws off scale
+            rotated = img.rotate(angle, resample=Image.BICUBIC, expand=False)
         else:
             rotated = img
+            
         face_tensor = mtcnn(rotated)
         if face_tensor is not None:
-            detected_any = True
             with torch.no_grad():
                 # Original
                 emb = model(face_tensor.unsqueeze(0)).cpu().numpy()[0]
-                embeddings.append(emb)
                 # Horizontal flip augmentation for slight robustness
-                flipped = torch.flip(face_tensor, dims=[2])  # flip width dimension (HWC -> after mtcnn is CHW; dims=[2]
+                flipped = torch.flip(face_tensor, dims=[2])
                 emb_flip = model(flipped.unsqueeze(0)).cpu().numpy()[0]
-                embeddings.append(emb_flip)
-    if not detected_any:
-        return None, False
-    # Average if multiple
-    embedding_final = np.mean(embeddings, axis=0)
-    return embedding_final.tolist(), True
+                
+            embedding_final = (emb + emb_flip) / 2.0
+            # L2 Normalize
+            norm = np.linalg.norm(embedding_final)
+            if norm > 0:
+                embedding_final = embedding_final / norm
+                
+            return embedding_final.tolist(), True
+            
+    return None, False
 
 @app.route("/api/recognize", methods=["POST"])
 def recognize():
@@ -87,7 +88,9 @@ def recognize():
 
         print("📸 Received image")
         try:
+            from PIL import ImageOps
             img = Image.open(image.stream).convert("RGB")
+            img = ImageOps.exif_transpose(img)
         except Exception as ie:
             return jsonify({"success": False, "embedding": [], "embedding_size": 0, "message": "Invalid image file"}), 400
 
